@@ -4,6 +4,7 @@
   rustToolchain,
   fetchpatch,
   clang,
+  mold,
   cmake,
   copyDesktopItems,
   curl,
@@ -73,6 +74,7 @@ let
         perl
         pkg-config
         protobuf
+        mold
         cargo-about
       ]
       ++ lib.optionals stdenv.hostPlatform.isLinux [ makeWrapper ]
