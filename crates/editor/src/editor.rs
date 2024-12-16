@@ -4708,17 +4708,6 @@ impl Editor {
         Some(active_inline_completion.completion)
     }
 
-    fn hide_active_inline_completion_inlays(&mut self, cx: &mut ViewContext<Self>) {
-        if let Some(active_inline_completion) = self.active_inline_completion.as_ref() {
-            self.splice_inlays(
-                active_inline_completion.inlay_ids.clone(),
-                Default::default(),
-                cx,
-            );
-            self.clear_highlights::<InlineCompletionHighlight>(cx);
-        }
-    }
-
     fn update_visible_inline_completion(&mut self, cx: &mut ViewContext<Self>) -> Option<()> {
         let selection = self.selections.newest_anchor();
         let cursor = selection.head();
