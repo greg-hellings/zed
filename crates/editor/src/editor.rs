@@ -3722,8 +3722,7 @@ impl Editor {
                 };
 
                 editor.update(&mut cx, |editor, cx| {
-                    let mut context_menu = editor.context_menu.borrow_mut();
-                    match context_menu.as_ref() {
+                    match editor.context_menu.borrow().as_ref() {
                         None => {}
                         Some(CodeContextMenu::Completions(prev_menu)) => {
                             if prev_menu.id > id {
@@ -3735,20 +3734,22 @@ impl Editor {
 
                     if editor.focus_handle.is_focused(cx) && menu.is_some() {
                         let mut menu = menu.unwrap();
-                        menu.resolve_selected_completion(editor.completion_provider.as_deref(), cx);
 
                         if editor.has_active_inline_completion() {
-                            menu.show_inline_completion_hint();
+                            menu.show_inline_completion_hint(
+                                editor.inline_completion_popover_text(cx),
+                            );
                         }
 
-                        *context_menu = Some(CodeContextMenu::Completions(menu));
-                        drop(context_menu);
+                        menu.resolve_selected_completion(editor.completion_provider.as_deref(), cx);
+                        *editor.context_menu.borrow_mut() =
+                            Some(CodeContextMenu::Completions(menu));
+
                         cx.notify();
                     } else if editor.completion_tasks.len() <= 1 {
                         // If there are no more completion tasks and the last menu was
                         // empty, we should hide it. If it was already hidden, we should
                         // also show the copilot completion when available.
-                        drop(context_menu);
                         editor.hide_context_menu(cx);
                     }
                 })?;
@@ -3759,6 +3760,23 @@ impl Editor {
         });
 
         self.completion_tasks.push((id, task));
+    }
+
+    pub fn inline_completion_popover_text(
+        &mut self,
+        cx: &mut ViewContext<Self>,
+    ) -> Option<(String, Vec<(Range<usize>, HighlightStyle)>)> {
+        let editor_snapshot = self.snapshot(cx);
+        let InlineCompletion::Edit(edits) = &self.active_inline_completion.as_ref()?.completion
+        else {
+            return None;
+        };
+
+        Some(crate::element::inline_completion_popover_text(
+            &editor_snapshot,
+            edits,
+            cx,
+        ))
     }
 
     pub fn confirm_completion(
@@ -3797,9 +3815,10 @@ impl Editor {
             .get(item_ix.unwrap_or(completions_menu.selected_item))?;
 
         let mat = match mat {
-            CompletionEntry::InlineCompletionHint => {
+            CompletionEntry::InlineCompletionHint { .. } => {
                 self.accept_inline_completion(&AcceptInlineCompletion, cx);
-                return None;
+                cx.stop_propagation();
+                return Some(Task::ready(Ok(())));
             }
             CompletionEntry::Match(mat) => {
                 self.discard_inline_completion(true, cx);
@@ -4689,6 +4708,17 @@ impl Editor {
         Some(active_inline_completion.completion)
     }
 
+    fn hide_active_inline_completion_inlays(&mut self, cx: &mut ViewContext<Self>) {
+        if let Some(active_inline_completion) = self.active_inline_completion.as_ref() {
+            self.splice_inlays(
+                active_inline_completion.inlay_ids.clone(),
+                Default::default(),
+                cx,
+            );
+            self.clear_highlights::<InlineCompletionHighlight>(cx);
+        }
+    }
+
     fn update_visible_inline_completion(&mut self, cx: &mut ViewContext<Self>) -> Option<()> {
         let selection = self.selections.newest_anchor();
         let cursor = selection.head();
@@ -4760,32 +4790,34 @@ impl Editor {
             invalidation_row_range = edit_start_row..cursor_row;
             completion = InlineCompletion::Move(first_edit_start);
         } else {
-            if edits
-                .iter()
-                .all(|(range, _)| range.to_offset(&multibuffer).is_empty())
-            {
-                let mut inlays = Vec::new();
-                for (range, new_text) in &edits {
-                    let inlay = Inlay::inline_completion(
-                        post_inc(&mut self.next_inlay_id),
-                        range.start,
-                        new_text.as_str(),
-                    );
-                    inlay_ids.push(inlay.id);
-                    inlays.push(inlay);
-                }
+            if !self.has_active_completions_menu() {
+                if edits
+                    .iter()
+                    .all(|(range, _)| range.to_offset(&multibuffer).is_empty())
+                {
+                    let mut inlays = Vec::new();
+                    for (range, new_text) in &edits {
+                        let inlay = Inlay::inline_completion(
+                            post_inc(&mut self.next_inlay_id),
+                            range.start,
+                            new_text.as_str(),
+                        );
+                        inlay_ids.push(inlay.id);
+                        inlays.push(inlay);
+                    }
 
-                self.splice_inlays(vec![], inlays, cx);
-            } else {
-                let background_color = cx.theme().status().deleted_background;
-                self.highlight_text::<InlineCompletionHighlight>(
-                    edits.iter().map(|(range, _)| range.clone()).collect(),
-                    HighlightStyle {
-                        background_color: Some(background_color),
-                        ..Default::default()
-                    },
-                    cx,
-                );
+                    self.splice_inlays(vec![], inlays, cx);
+                } else {
+                    let background_color = cx.theme().status().deleted_background;
+                    self.highlight_text::<InlineCompletionHighlight>(
+                        edits.iter().map(|(range, _)| range.clone()).collect(),
+                        HighlightStyle {
+                            background_color: Some(background_color),
+                            ..Default::default()
+                        },
+                        cx,
+                    );
+                }
             }
 
             invalidation_row_range = edit_start_row..edit_end_row;
@@ -4805,11 +4837,14 @@ impl Editor {
             invalidation_range,
         });
 
-        match self.context_menu.borrow_mut().as_mut() {
-            Some(CodeContextMenu::Completions(menu)) => {
-                menu.show_inline_completion_hint();
+        if self.has_active_completions_menu() {
+            let popover_text = self.inline_completion_popover_text(cx);
+            match self.context_menu.borrow_mut().as_mut() {
+                Some(CodeContextMenu::Completions(menu)) => {
+                    menu.show_inline_completion_hint(popover_text);
+                }
+                _ => {}
             }
-            _ => {}
         }
         cx.notify();
 
